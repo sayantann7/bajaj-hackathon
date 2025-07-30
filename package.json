@@ -1,0 +1,26 @@
+{
+  "dependencies": {
+    "@langchain/openai": "^0.6.3",
+    "@langchain/textsplitters": "^0.1.0",
+    "@supabase/supabase-js": "^2.53.0",
+    "dotenv": "^17.2.1",
+    "fs": "^0.0.1-security",
+    "openai": "^5.11.0",
+    "pdf-parse": "^1.1.1",
+    "typescript": "^5.8.3"
+  },
+  "name": "bajaj-hackathon",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "npx tsc -b && node dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "@types/pdf-parse": "^1.1.5"
+  }
+}
