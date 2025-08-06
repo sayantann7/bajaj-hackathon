@@ -2,7 +2,6 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { InferenceClient } from "@huggingface/inference";
-import { pipeline } from '@xenova/transformers';
 import { createClient } from "@supabase/supabase-js";
 
 /** Hugging Face config */
@@ -13,6 +12,8 @@ let embeddingPipeline: any = null;
 
 export async function getEmbeddingPipeline() {
   if (!embeddingPipeline) {
+    // Use dynamic import for ES modules
+    const { pipeline } = await import('@xenova/transformers');
     embeddingPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
   }
   return embeddingPipeline;
