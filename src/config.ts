@@ -6,8 +6,7 @@ import { pipeline } from '@xenova/transformers';
 import { createClient } from "@supabase/supabase-js";
 
 /** Hugging Face config */
-const HF_TOKEN = process.env.HF_TOKEN;
-export const hfClient = new InferenceClient(HF_TOKEN);
+export const hfClient = new InferenceClient(process.env.HF_TOKEN);
 
 /** Local embedding model using Transformers.js */
 let embeddingPipeline: any = null;
