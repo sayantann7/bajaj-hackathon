@@ -1,15 +1,23 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import OpenAI from 'openai';
+import { InferenceClient } from "@huggingface/inference";
+import { pipeline } from '@xenova/transformers';
 import { createClient } from "@supabase/supabase-js";
 
-/** OpenAI config */
-if (!process.env.OPENAI_API_KEY) throw new Error("OpenAI API key is missing or invalid.");
-export const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  dangerouslyAllowBrowser: true
-});
+/** Hugging Face config */
+const HF_TOKEN = "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";
+export const hfClient = new InferenceClient(HF_TOKEN);
+
+/** Local embedding model using Transformers.js */
+let embeddingPipeline: any = null;
+
+export async function getEmbeddingPipeline() {
+  if (!embeddingPipeline) {
+    embeddingPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+  }
+  return embeddingPipeline;
+}
 
 /** Supabase config */
 const privateKey = process.env.SUPABASE_API_KEY;

@@ -1,4 +1,4 @@
-import { openai, supabase } from '../config';
+import { getEmbeddingPipeline, supabase } from '../config';
 
 export interface EmbeddingStats {
     totalDocuments: number;
@@ -14,11 +14,10 @@ export class EmbeddingService {
 
     async createEmbedding(text: string): Promise<number[]> {
         try {
-            const response = await openai.embeddings.create({
-                model: "text-embedding-3-small",
-                input: text,
-            });
-            return response.data[0].embedding;
+            // Use local embedding model instead of OpenAI
+            const embeddingModel = await getEmbeddingPipeline();
+            const output = await embeddingModel(text, { pooling: 'mean', normalize: true });
+            return Array.from(output.data);
         } catch (error) {
             console.error('Error creating embedding:', error);
             throw error;

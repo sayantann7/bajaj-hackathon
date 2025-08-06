@@ -1,6 +1,6 @@
 import { getPdfContent } from "./file";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { openai, supabase } from "./config";
+import { hfClient, getEmbeddingPipeline, supabase } from "./config";
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -22,11 +22,11 @@ function estimateTokens(text: string): number {
 function splitTextForTokenLimit(text: string, maxTokens: number): string[] {
     const maxChars = maxTokens * 4; // Conservative estimate
     const chunks: string[] = [];
-    
+
     for (let i = 0; i < text.length; i += maxChars) {
         chunks.push(text.slice(i, i + maxChars));
     }
-    
+
     return chunks;
 }
 
@@ -78,23 +78,23 @@ async function createFewShotExamples(pdfContent: string, documentName: string): 
     // First, check if few-shot examples already exist in the database
     console.log(`Checking for existing few-shot examples for document: ${documentName}`);
     const existingExamples = await getFewShotExamplesFromDB(documentName);
-    
+
     if (existingExamples) {
         console.log(`Found existing few-shot examples for ${documentName}. Using cached version.`);
         return existingExamples;
     }
 
     console.log(`No existing few-shot examples found. Generating new ones for ${documentName}...`);
-    
+
     // GPT-4o-mini has a context window of 128k tokens, but we'll be conservative
     // Leave room for system prompt and response (estimate ~2000 tokens for system + response)
     const maxInputTokens = 40000; // More conservative limit per request
     const estimatedTokens = estimateTokens(pdfContent);
-    
+
     console.log(`Estimated tokens: ${estimatedTokens}`);
-    
+
     let fewShotExamples: string;
-    
+
     if (estimatedTokens <= maxInputTokens) {
         // Single request if within limits
         fewShotExamples = await processSingleChunkForExamples(pdfContent);
@@ -102,22 +102,22 @@ async function createFewShotExamples(pdfContent: string, documentName: string): 
         // Split into multiple chunks
         const chunks = splitTextForTokenLimit(pdfContent, maxInputTokens);
         console.log(`Splitting document into ${chunks.length} chunks for few-shot example generation...`);
-        
+
         const allExamples: string[] = [];
-        
+
         for (let i = 0; i < chunks.length; i++) {
             console.log(`Processing chunk ${i + 1}/${chunks.length} for few-shot examples...`);
-            
+
             try {
                 const examples = await processSingleChunkForExamples(chunks[i], i + 1);
                 allExamples.push(examples);
-                
+
                 // Add delay between requests to respect rate limits
                 if (i < chunks.length - 1) {
                     console.log('Waiting 5 seconds before next chunk...');
                     await delay(5000);
                 }
-                
+
             } catch (error: any) {
                 if (error.code === 'rate_limit_exceeded') {
                     console.log(`Rate limit hit on chunk ${i + 1}. Waiting 60 seconds...`);
@@ -128,22 +128,85 @@ async function createFewShotExamples(pdfContent: string, documentName: string): 
                 }
             }
         }
-        
+
         // Combine all examples
         fewShotExamples = allExamples.join('\n\n');
     }
 
     // Store the generated examples in the database
     await storeFewShotExamplesInDB(documentName, fewShotExamples);
-    
+
+    return fewShotExamples;
+}
+
+// New optimized function that processes whole document unless it exceeds 128k tokens
+async function createFewShotExamplesOptimized(pdfContent: string, documentName: string): Promise<string> {
+    // First, check if few-shot examples already exist in the database
+    console.log(`Checking for existing few-shot examples for document: ${documentName}`);
+    const existingExamples = await getFewShotExamplesFromDB(documentName);
+
+    if (existingExamples) {
+        console.log(`Found existing few-shot examples for ${documentName}. Using cached version.`);
+        return existingExamples;
+    }
+
+    console.log(`No existing few-shot examples found. Generating new ones for ${documentName}...`);
+
+    // gpt-oss-120b has a context window of 128k tokens
+    // Leave room for system prompt and response (estimate ~3000 tokens for system + response)
+    const maxInputTokens = 125000; // Use most of the 128k context window
+    const estimatedTokens = estimateTokens(pdfContent);
+
+    console.log(`Estimated tokens: ${estimatedTokens}`);
+
+    let fewShotExamples: string;
+
+    if (estimatedTokens <= maxInputTokens) {
+        // Process whole document in single request
+        console.log('Processing entire document in single request...');
+        fewShotExamples = await processSingleChunkForExamplesOptimized(pdfContent);
+    } else {
+        // Only chunk if document exceeds 128k token limit
+        console.log(`Document exceeds ${maxInputTokens} tokens. Splitting into chunks...`);
+        const chunks = splitTextForTokenLimit(pdfContent, maxInputTokens);
+        console.log(`Splitting document into ${chunks.length} chunks for few-shot example generation...`);
+
+        const allExamples: string[] = [];
+
+        for (let i = 0; i < chunks.length; i++) {
+            console.log(`Processing chunk ${i + 1}/${chunks.length} for few-shot examples...`);
+
+            try {
+                const examples = await processSingleChunkForExamplesOptimized(chunks[i], i + 1);
+                allExamples.push(examples);
+
+                // Small delay between chunks to be respectful
+                if (i < chunks.length - 1) {
+                    console.log('Waiting 2 seconds before next chunk...');
+                    await delay(2000);
+                }
+
+            } catch (error: any) {
+                console.error(`Error processing chunk ${i + 1}:`, error);
+                // Continue with other chunks even if one fails
+            }
+        }
+
+        // Combine all examples
+        fewShotExamples = allExamples.join('\n\n');
+    }
+
+    // Store the generated examples in the database
+    await storeFewShotExamplesInDB(documentName, fewShotExamples);
+
     return fewShotExamples;
 }
 
 async function processSingleChunkForExamples(content: string, chunkNumber?: number): Promise<string> {
     const chunkInfo = chunkNumber ? ` (Chunk ${chunkNumber})` : '';
-    
-    const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+
+    const response = await hfClient.chatCompletion({
+        model: "openai/gpt-oss-120b",
         messages: [
             {
                 role: "system",
@@ -190,11 +253,54 @@ async function processSingleChunkForExamples(content: string, chunkNumber?: numb
                 content: content,
             },
         ],
-        max_tokens: 1500,
-        temperature: 0.7,
+        max_tokens: 100000,
     });
 
     return response.choices[0].message.content ?? "";
+}
+
+async function storeEmbeddedChunksAll(pdfPath: string = 'bajaj-2.pdf'): Promise<any[]> {
+    const pdfContent = await getPdfContent(pdfPath);
+
+    if (pdfContent) {
+        const chunks = await textSplitter.splitText(pdfContent);
+        console.log(`Processing all ${chunks.length} chunks in parallel...`);
+
+        try {
+            const embeddedChunks = await Promise.all(
+                chunks.map(async (chunk, index) => {
+                    console.log(`Processing chunk ${index + 1}/${chunks.length}...`);
+                    const embeddingModel = await getEmbeddingPipeline();
+                    const output = await embeddingModel(chunk, { pooling: 'mean', normalize: true });
+                    const embedding = Array.from(output.data);
+
+                    await supabase.from('documents').insert({
+                        content: chunk,
+                        embedding: embedding,
+                        document_name: pdfPath,
+                        chunk_index: index,
+                        created_at: new Date().toISOString()
+                    });
+
+                    return {
+                        chunk: chunk,
+                        embedding: embedding,
+                        document_name: pdfPath,
+                        chunk_index: index
+                    };
+                })
+            );
+
+            console.log(`Successfully processed and stored ${embeddedChunks.length} chunks`);
+            return embeddedChunks;
+        } catch (error) {
+            console.error('Error processing chunks:', error);
+            throw error;
+        }
+    } else {
+        console.log("No content extracted from the PDF.");
+        return [];
+    }
 }
 
 async function storeEmbeddedChunksBatched(): Promise<any[]> {
@@ -216,19 +322,18 @@ async function storeEmbeddedChunksBatched(): Promise<any[]> {
             try {
                 const batchResults = await Promise.all(
                     batch.map(async (chunk, index) => {
-                        const response = await openai.embeddings.create({
-                            model: "text-embedding-3-small",
-                            input: chunk,
-                        });
+                        const embeddingModel = await getEmbeddingPipeline();
+                        const output = await embeddingModel(chunk, { pooling: 'mean', normalize: true });
+                        const embedding = Array.from(output.data);
 
                         await supabase.from('documents').insert({
                             content: chunk,
-                            embedding: response.data[0].embedding
+                            embedding: embedding
                         });
 
                         return {
                             chunk: chunk,
-                            embedding: response.data[0].embedding,
+                            embedding: embedding,
                         };
                     })
                 );
@@ -260,19 +365,18 @@ async function storeEmbeddedChunksBatched(): Promise<any[]> {
 }
 
 async function queryEmbeddedChunks(query: string, fewShotExamples: string): Promise<string> {
-    const response = await openai.embeddings.create({
-        model: "text-embedding-3-small",
-        input: query,
-    });
-    const queryEmbedding = response.data[0].embedding;
+    const embeddingModel = await getEmbeddingPipeline();
+    const output = await embeddingModel(query, { pooling: 'mean', normalize: true });
+    const queryEmbedding = Array.from(output.data);
+
     const { data } = await supabase.rpc('match_documents', {
         query_embedding: queryEmbedding,
-        match_threshold: 0.50,
-        match_count: 3
+        match_threshold: 0.20,
+        match_count: 10
     });
 
-    const queryResponse = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+    const queryResponse = await hfClient.chatCompletion({
+        model: "openai/gpt-oss-120b",
         messages: [
             {
                 role: "system",
@@ -287,16 +391,22 @@ async function queryEmbeddedChunks(query: string, fewShotExamples: string): Prom
                 content: `Answer the question based on the following context:\n${JSON.stringify(data)}\n\nQuestion: ${query}`
             }
         ],
-        max_tokens: 1000,
-        temperature: 0.7,
+        max_tokens: 100000,
     });
 
     return queryResponse.choices[0].message.content ?? "";
 }
 
 async function storeEmbeddedChunks() {
-    const embeddedChunks = await storeEmbeddedChunksBatched();
+    // Use the parallel version for faster processing without rate limits
+    const embeddedChunks = await storeEmbeddedChunksAll();
     console.log("Stored Embedded Chunks:", embeddedChunks.length);
+}
+
+// Alternative function to use batched processing if needed
+async function storeEmbeddedChunksSlow() {
+    const embeddedChunks = await storeEmbeddedChunksBatched();
+    console.log("Stored Embedded Chunks (Batched):", embeddedChunks.length);
 }
 
 async function fetchQueryResults() {
@@ -314,3 +424,40 @@ async function fetchQueryResults() {
 }
 
 fetchQueryResults();
+
+// Helper function to process a single chunk for few-shot examples (optimized version)
+async function processSingleChunkForExamplesOptimized(chunk: string, chunkNumber?: number): Promise<string> {
+    const chunkPrefix = chunkNumber ? ` (Chunk ${chunkNumber})` : '';
+
+    const prompt = `You are an expert assistant. Based on the following document content${chunkPrefix}, create 3-5 high-quality question-answer pairs that demonstrate the types of questions users might ask about this content and how to answer them comprehensively.
+
+Each question should be realistic and relevant to the document content. Each answer should be detailed, accurate, and cite specific information from the document.
+
+Format as:
+Q: [Question]
+A: [Detailed Answer]
+
+Document Content:
+${chunk}
+
+Generate the question-answer pairs:`;
+
+    const response = await hfClient.chatCompletion({
+        model: "openai/gpt-oss-120b",
+        messages: [
+            {
+                role: "system",
+                content: "You are an expert document analyzer. Generate high-quality question-answer pairs based on the document content provided."
+            },
+            {
+                role: "user",
+                content: prompt
+            }
+        ],
+        max_tokens: 1000,
+    });
+
+    return response.choices[0].message.content ?? "";
+}
+
+export { createFewShotExamples, createFewShotExamplesOptimized, storeEmbeddedChunksAll };

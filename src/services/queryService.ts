@@ -1,4 +1,4 @@
-import { openai, supabase } from '../config';
+import { hfClient, getEmbeddingPipeline, supabase } from '../config';
 
 export interface QueryResult {
     answer: string;
@@ -43,11 +43,9 @@ export class QueryService {
     async queryDocuments(query: string, documentName?: string): Promise<QueryResult> {
         try {
             // Get query embedding
-            const response = await openai.embeddings.create({
-                model: "text-embedding-3-small",
-                input: query,
-            });
-            const queryEmbedding = response.data[0].embedding;
+            const embeddingModel = await getEmbeddingPipeline();
+            const output = await embeddingModel(query, { pooling: 'mean', normalize: true });
+            const queryEmbedding = Array.from(output.data);
 
             // Search for relevant documents with a smaller initial limit
             const { data: matchData, error: matchError } = await supabase.rpc('match_documents', {
@@ -129,8 +127,8 @@ export class QueryService {
                 const reducedContextText = reducedContext.map(doc => doc.content).join('\n\n');
                 const reducedUserMessage = `Answer the question based on the following context:\n\n${reducedContextText}\n\nQuestion: ${query}`;
                 
-                const queryResponse = await openai.chat.completions.create({
-                    model: "gpt-4o-mini",
+                const queryResponse = await hfClient.chatCompletion({
+                    model: "openai/gpt-oss-120b",
                     messages: [
                         {
                             role: "system",
@@ -160,8 +158,8 @@ export class QueryService {
                 };
             }
 
-            const queryResponse = await openai.chat.completions.create({
-                model: "gpt-4o-mini",
+            const queryResponse = await hfClient.chatCompletion({
+                model: "openai/gpt-oss-120b",
                 messages: [
                     {
                         role: "system",
@@ -218,11 +216,10 @@ export class QueryService {
 
     async searchSimilarChunks(query: string, documentName?: string, limit: number = 5): Promise<any[]> {
         try {
-            const response = await openai.embeddings.create({
-                model: "text-embedding-3-small",
-                input: query,
-            });
-            const queryEmbedding = response.data[0].embedding;
+            // Use local embedding model instead of OpenAI
+            const embeddingModel = await getEmbeddingPipeline();
+            const output = await embeddingModel(query, { pooling: 'mean', normalize: true });
+            const queryEmbedding = Array.from(output.data);
 
             let searchQuery = supabase.rpc('match_documents', {
                 query_embedding: queryEmbedding,

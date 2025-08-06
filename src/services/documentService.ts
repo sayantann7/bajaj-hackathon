@@ -1,5 +1,5 @@
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { openai, supabase } from '../config';
+import { hfClient, getEmbeddingPipeline, supabase } from '../config';
 
 export interface ProcessDocumentResult {
     chunksProcessed: number;
@@ -117,14 +117,13 @@ export class DocumentService {
             try {
                 const batchResults = await Promise.all(
                     batch.map(async (chunk, index) => {
-                        const response = await openai.embeddings.create({
-                            model: "text-embedding-3-small",
-                            input: chunk,
-                        });
+                        const embeddingModel = await getEmbeddingPipeline();
+                        const output = await embeddingModel(chunk, { pooling: 'mean', normalize: true });
+                        const embedding = Array.from(output.data);
 
                         const { error } = await supabase.from('documents').insert({
                             content: chunk,
-                            embedding: response.data[0].embedding,
+                            embedding: embedding,
                             document_name: documentName,
                             chunk_index: i + index,
                             created_at: new Date().toISOString()
@@ -134,7 +133,7 @@ export class DocumentService {
 
                         return {
                             chunk: chunk,
-                            embedding: response.data[0].embedding,
+                            embedding: embedding,
                         };
                     })
                 );
@@ -221,8 +220,8 @@ export class DocumentService {
     }
 
     private async processSingleChunkForExamples(content: string, chunkNumber?: number): Promise<string> {
-        const response = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+        const response = await hfClient.chatCompletion({
+            model: "openai/gpt-oss-120b",
             messages: [
                 {
                     role: "system",
@@ -270,7 +269,6 @@ export class DocumentService {
                 },
             ],
             max_tokens: 1500,
-            temperature: 0.7,
         });
 
         return response.choices[0].message.content ?? "";
