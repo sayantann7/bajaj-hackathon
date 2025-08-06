@@ -25,6 +25,7 @@
     "server": "npx tsc -b && node dist/server.js",
     "watch": "npx tsc -b --watch"
   },
+  "type": "module",
   "keywords": [],
   "author": "",
   "license": "ISC",
